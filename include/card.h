@@ -17,13 +17,10 @@ typedef struct Card {
     Rank rank;
     Suit suit;
     struct Card *next;
-    bool face_up;
 } Card;
 
-// Function prototypes
-Card *card_create(Rank rank, Suit suit, bool face_up);
+// Function prototype
+Card *card_create(Rank rank, Suit suit);
 void card_free(Card *card);
 char* card_to_string(const Card* c);
-#endif
-
 #endif
