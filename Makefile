@@ -1,16 +1,40 @@
-CC       := gcc
-CFLAGS   := -std=c99 -Wall -Wextra -Iinclude
-SRC_TEXT := src/card.c src/deck.c src/game.c src/ui_text.c src/main.c
-OBJ_TEXT := $(SRC_TEXT:.c=.o)
+# ---- paths ----
+SRCDIR := src
+BINDIR := bin
 
-all: text
+CC      := gcc
+CFLAGS  := -std=c11 -Wall -Wextra -I$(SRCDIR)
 
-text: yukon_text
+# ---- SDL detection (only if present) ----
+SDL_CONFIG := $(shell command -v sdl2-config 2>/dev/null)
+ifeq ($(SDL_CONFIG),)
+    $(info *** SDL2 not found – GUI target will be skipped ***)
+    SDL_CFLAGS :=
+    SDL_LIBS   :=
+    GUI_ENABLED := 0
+else
+    SDL_CFLAGS := $(shell $(SDL_CONFIG) --cflags)
+    SDL_LIBS   := $(shell $(SDL_CONFIG) --libs)
+    GUI_ENABLED := 1
+endif
 
-yukon_text: $(OBJ_TEXT)
-	$(CC) $(CFLAGS) -o $@ $^
+# ---- targets ----
+.PHONY: all tui gui clean
+all: tui gui            # builds what is possible
+
+tui: | $(BINDIR)
+	$(CC) $(CFLAGS) $(SRCDIR)/tui.c -o $(BINDIR)/tui
+
+ifeq ($(GUI_ENABLED),1)
+gui: | $(BINDIR)
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) $(SRCDIR)/gui_sdl.c -o $(BINDIR)/yukon_gui $(SDL_LIBS)
+else
+gui:
+	@echo \"(skipped) GUI requires SDL2\"
+endif
+
+$(BINDIR):
+	mkdir -p $@
 
 clean:
-	rm -f yukon_text src/*.o
-	
-.PHONY: all text clean
+	rm -rf $(BINDIR)

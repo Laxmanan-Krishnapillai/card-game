@@ -3,6 +3,7 @@
 { pkgs, ... }: {
   # Which nixpkgs channel to use.
   channel = "stable-24.05"; # or "unstable"
+
   # Use https://search.nixos.org/packages to find packages
   packages = [
     # pkgs.go
@@ -11,7 +12,12 @@
     # pkgs.nodejs_20
     # pkgs.nodePackages.nodemon
     pkgs.sudo
+    pkgs.gcc
+    pkgs.gnumake
+    pkgs.cmake
+    pkgs.clang-tools
   ];
+
   # Sets environment variables in the workspace
   env = {};
   idx = {
@@ -19,6 +25,7 @@
     extensions = [
       # "vscodevim.vim"
     ];
+
     # Enable previews
     previews = {
       enable = true;
@@ -35,14 +42,13 @@
         # };
       };
     };
+
     # Workspace lifecycle hooks
     workspace = {
       # Runs when a workspace is first created
       onCreate = {
         # Example: install JS dependencies from NPM
         # npm-install = "npm install";
-        # Open editors for the following files by default, if they exist:
-        default.openFiles = [ ".idx/dev.nix" "README.md" ];
       };
       # Runs when the workspace is (re)started
       onStart = {

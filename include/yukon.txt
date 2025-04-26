@@ -1,0 +1,635 @@
+/*
+ * Yukon Solitaire – Terminal version (C11)
+ * ---------------------------------------------------------------
+ * Implements the mandatory functionality from the project brief:
+ *   STARTUP‑phase commands:  LD, SW, SI, SR, SD, QQ
+ *   PLAY‑phase commands:     P, Q, <from>-><to> moves
+ *   (GUI and optional commands U/R/S/L are purposefully omitted.)
+ *
+ * Data structures: singly‑linked lists only (no arrays for persistent card
+ * storage).  A temporary traversal array is used only during the Fisher–Yates
+ * style shuffle but **never** persisted.
+ *
+ * Build & run
+ * -----------
+ *   # build the playable game
+ *   gcc -std=c11 -Wall -Wextra yukon.c -o yukon
+ *
+ *   # build and execute the unit tests
+ *   gcc -std=c11 -Wall -Wextra -DTEST yukon.c -o tests
+ *   ./tests
+ *
+ * Controls while running `./yukon` are exactly those listed in the PDF.  At
+ * the `INPUT >` prompt type commands such as:
+ *   LD            – load an ordered deck
+ *   SI 26         – perfect riffle shuffle (split = 26)
+ *   P             – deal the game and enter PLAY phase
+ *   C7:AS->F1     – move the Ace of Spades from column 7 to foundation 1
+ *   Q             – abandon the current game back to STARTUP phase
+ *   QQ            – quit the program entirely
+ */
+
+#include <assert.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+/*———————  Card & basic structures ———————*/
+typedef enum { CLUBS, DIAMONDS, HEARTS, SPADES } Suit;
+
+typedef struct Card {
+  int rank;          /* 1–13  (Ace = 1)               */
+  Suit suit;         /* one of the above enum values  */
+  int face_up;       /* boolean                       */
+  struct Card *next; /* singly‑linked list            */
+} Card;
+
+static const char RANK_CH[] = " A23456789TJQK"; /* index 0 unused */
+static const char SUIT_CH[] = {'C', 'D', 'H', 'S'};
+
+/*———————  Global game state (kept tiny & flat) ———————*/
+
+typedef enum { STARTUP, PLAY } Phase;
+
+typedef struct {
+  Phase phase;
+  Card *deck; /* top = head                     */
+  Card *columns[7];
+  Card *foundations[4]; /* top = head (push‑down stack)   */
+  char last_cmd[128];
+  char message[128];
+} Game;
+
+/*—————————————————  Utility helpers  —————————————————*/
+static Card *new_card(int rank, Suit suit, int face_up) {
+  Card *c = malloc(sizeof *c);
+  c->rank = rank;
+  c->suit = suit;
+  c->face_up = face_up;
+  c->next = NULL;
+  return c;
+}
+
+static void push(Card **head, Card *c) {
+  c->next = *head;
+  *head = c;
+}
+static Card *pop(Card **head) {
+  Card *c = *head;
+  if (c) {
+    *head = c->next;
+    c->next = NULL;
+  }
+  return c;
+}
+static void append(Card **head, Card *c) {
+  if (!*head) {
+    *head = c;
+    c->next = NULL;
+    return;
+  }
+  Card *p = *head;
+  while (p->next)
+    p = p->next;
+  p->next = c;
+  c->next = NULL;
+}
+static void freelist(Card *h) {
+  while (h) {
+    Card *n = h->next;
+    free(h);
+    h = n;
+  }
+}
+static int col_height(Card *c) {
+  int n = 0;
+  while (c) {
+    ++n;
+    c = c->next;
+  }
+  return n;
+}
+
+static int rank_from_char(char r) {
+  if (r == 'A')
+    return 1;
+  if (r >= '2' && r <= '9')
+    return r - '0';
+  if (r == 'T')
+    return 10;
+  if (r == 'J')
+    return 11;
+  if (r == 'Q')
+    return 12;
+  if (r == 'K')
+    return 13;
+  return -1;
+}
+static int suit_from_char(char s) {
+  switch (s) {
+  case 'C':
+    return CLUBS;
+  case 'D':
+    return DIAMONDS;
+  case 'H':
+    return HEARTS;
+  case 'S':
+    return SPADES;
+  default:
+    return -1;
+  }
+}
+
+static void flip_bottom(Card *col) {
+  if (!col)
+    return;
+  while (col->next)
+    col = col->next;
+  col->face_up = 1;
+}
+
+/*—————————————————  Deck management  —————————————————*/
+static void load_standard_deck(Card **deck) {
+  for (int s = 0; s < 4; ++s)
+    for (int r = 1; r <= 13; ++r)
+      append(deck, new_card(r, (Suit)s, 0));
+}
+
+static int cmd_LD(Game *g, const char *fname) {
+  freelist(g->deck);
+  g->deck = NULL;
+  if (fname && *fname) {
+    FILE *fp = fopen(fname, "r");
+    if (!fp) {
+      sprintf(g->message, "Error: file not found");
+      return 0;
+    }
+    int seen[4][14] = {0}, line = 0;
+    char buf[16];
+    while (fgets(buf, sizeof buf, fp)) {
+      ++line;
+      if (buf[0] == '\n')
+        continue;
+      int r = rank_from_char(buf[0]);
+      int s = suit_from_char(buf[1]);
+      if (r < 0 || s < 0 || seen[s][r]) {
+        sprintf(g->message, "Error: bad card line %d", line);
+        fclose(fp);
+        return 0;
+      }
+      seen[s][r] = 1;
+      append(&g->deck, new_card(r, (Suit)s, 0));
+    }
+    fclose(fp);
+    Card *tmp = g->deck;
+    int cnt = 0;
+    while (tmp) {
+      ++cnt;
+      tmp = tmp->next;
+    }
+    if (cnt != 52) {
+      sprintf(g->message, "Error: deck must contain 52 cards");
+      return 0;
+    }
+  } else {
+    load_standard_deck(&g->deck);
+  }
+  strcpy(g->message, "OK");
+  return 1;
+}
+
+static int cmd_SW(Game *g) {
+  if (!g->deck) {
+    strcpy(g->message, "Error: No deck loaded");
+    return 0;
+  }
+  puts("C1 C2 C3 C4 C5 C6 C7\n");
+  Card *c = g->deck;
+  int col = 0;
+  while (c) {
+    printf("%c%c\t", RANK_CH[c->rank], SUIT_CH[c->suit]);
+    if (++col == 7) {
+      puts("\n");
+      col = 0;
+    }
+    c = c->next;
+  }
+  puts("");
+  strcpy(g->message, "OK");
+  return 1;
+}
+
+static int cmd_SI(Game *g, int split) {
+  if (!g->deck) {
+    strcpy(g->message, "Error: No deck");
+    return 0;
+  }
+  /* measure deck length */
+  int len = 0;
+  for (Card *p = g->deck; p; p = p->next)
+    ++len;
+  if (split <= 0 || split >= len)
+    split = rand() % (len - 1) + 1;
+  /* chop at split */
+  Card *p = g->deck;
+  for (int i = 1; i < split; ++i)
+    p = p->next;
+  Card *pile2 = p->next;
+  p->next = NULL;
+  Card *pile1 = g->deck;
+  /* riffle */
+  Card *shuf = NULL, **tail = &shuf;
+  while (pile1 || pile2) {
+    if (pile1) {
+      *tail = pile1;
+      tail = &pile1->next;
+      pile1 = *tail;
+    }
+    if (pile2) {
+      *tail = pile2;
+      tail = &pile2->next;
+      pile2 = *tail;
+    }
+  }
+  g->deck = shuf;
+  strcpy(g->message, "OK");
+  return 1;
+}
+
+static int cmd_SR(Game *g) {
+  if (!g->deck) {
+    strcpy(g->message, "Error: No deck");
+    return 0;
+  }
+  Card *unsh = g->deck, *shuf = NULL;
+  srand((unsigned)time(NULL));
+  while (unsh) {
+    Card *c = pop(&unsh);
+    if (!shuf) {
+      shuf = c;
+    } else {
+      int span = 0;
+      for (Card *q = shuf; q; q = q->next)
+        ++span;
+      int pos = rand() % (span + 1);
+      if (pos == 0) {
+        c->next = shuf;
+        shuf = c;
+      } else {
+        Card *q = shuf;
+        for (int i = 0; i < pos - 1; ++i)
+          q = q->next;
+        c->next = q->next;
+        q->next = c;
+      }
+    }
+  }
+  g->deck = shuf;
+  strcpy(g->message, "OK");
+  return 1;
+}
+
+static int cmd_SD(Game *g, const char *fname) {
+  if (!g->deck) {
+    strcpy(g->message, "Error: No deck");
+    return 0;
+  }
+  const char *f = (fname && *fname) ? fname : "cards.txt";
+  FILE *fp = fopen(f, "w");
+  if (!fp) {
+    strcpy(g->message, "Error: cannot open file");
+    return 0;
+  }
+  for (Card *c = g->deck; c; c = c->next)
+    fprintf(fp, "%c%c\n", RANK_CH[c->rank], SUIT_CH[c->suit]);
+  fclose(fp);
+  strcpy(g->message, "OK");
+  return 1;
+}
+
+/*—————————————————  Dealing (P)  —————————————————*/
+static void deal(Game *g) {
+  static const int layout[7] = {1, 6, 7, 8, 9, 10, 11};
+  static const int facedown[7] = {0, 1, 2, 3, 4, 5, 6}; /* 21 hidden cards */
+  const int MAX = 11;
+  for (int row = 0; row < MAX; ++row) {
+    for (int col = 0; col < 7; ++col) {
+      if (row < layout[col]) {
+        Card *c = pop(&g->deck);
+        if (!c) {
+          fputs("Error: insufficient cards while dealing\n", stderr);
+          exit(EXIT_FAILURE);
+        }
+        c->face_up = (row >= facedown[col]);
+        append(&g->columns[col], c);
+      }
+    }
+  }
+  g->phase = PLAY;
+  strcpy(g->message, "OK");
+}
+
+static int cmd_P(Game *g) {
+  if (!g->deck) {
+    strcpy(g->message, "Error: No deck");
+    return 0;
+  }
+  deal(g);
+  return 1;
+}
+
+/*—————————————————  Move helpers  —————————————————*/
+static int can_place(Card *dest_bottom, Card *src_top) {
+  if (!dest_bottom)
+    return src_top->rank == 13; /* empty column ⇒ king */
+  if (dest_bottom->suit == src_top->suit)
+    return 0;                                    /* must differ in suit */
+  return dest_bottom->rank == src_top->rank + 1; /* exactly one rank higher */
+}
+
+static Card *find_faceup(Card *col, int rank, Suit suit, Card **prev) {
+  *prev = NULL;
+  while (col) {
+    if (col->rank == rank && col->suit == suit && col->face_up)
+      return col;
+    *prev = col;
+    col = col->next;
+  }
+  return NULL;
+}
+
+/*————————  bottom‑to‑foundation & vice‑versa ————————*/
+static int col_to_found(Game *g, int col, int fnd) {
+  Card *c = g->columns[col], *prev = NULL;
+  if (!c) {
+    strcpy(g->message, "Error: empty column");
+    return 0;
+  }
+  while (c->next) {
+    prev = c;
+    c = c->next;
+  }
+  if (!c->face_up) {
+    strcpy(g->message, "Error: card face‑down");
+    return 0;
+  }
+  Card *topF = g->foundations[fnd];
+  if (topF) {
+    if (topF->suit != c->suit || c->rank != topF->rank + 1) {
+      strcpy(g->message, "Error: bad foundation move");
+      return 0;
+    }
+  } else if (c->rank != 1) {
+    strcpy(g->message, "Error: foundation must start with Ace");
+    return 0;
+  }
+  if (prev)
+    prev->next = NULL;
+  else
+    g->columns[col] = NULL; /* detach */
+  c->next = topF;
+  g->foundations[fnd] = c;
+  flip_bottom(g->columns[col]);
+  strcpy(g->message, "OK");
+  return 1;
+}
+
+static int found_to_col(Game *g, int fnd, int col) {
+  Card *card = g->foundations[fnd];
+  if (!card) {
+    strcpy(g->message, "Error: foundation empty");
+    return 0;
+  }
+  Card *dest = g->columns[col];
+  while (dest && dest->next)
+    dest = dest->next;
+  if (!can_place(dest, card)) {
+    strcpy(g->message, "Error: bad move");
+    return 0;
+  }
+  g->foundations[fnd] = card->next;
+  card->next = NULL;
+  if (dest)
+    dest->next = card;
+  else
+    g->columns[col] = card;
+  strcpy(g->message, "OK");
+  return 1;
+}
+
+/*————————  generic column‑to‑column sequence move ————————*/
+static int seq_move(Game *g, int src_col, int rank, Suit suit, int dst_col) {
+  Card *col = g->columns[src_col], *prev = NULL;
+  while (col && !(col->rank == rank && col->suit == suit && col->face_up)) {
+    prev = col;
+    col = col->next;
+  }
+  if (!col) {
+    strcpy(g->message, "Error: card not found");
+    return 0;
+  }
+  Card *dst = g->columns[dst_col];
+  while (dst && dst->next)
+    dst = dst->next;
+  if (!can_place(dst, col)) {
+    strcpy(g->message, "Error: bad move");
+    return 0;
+  }
+  if (prev)
+    prev->next = NULL;
+  else
+    g->columns[src_col] = NULL; /* detach block */
+  if (dst)
+    dst->next = col;
+  else
+    g->columns[dst_col] = col; /* attach */
+  flip_bottom(g->columns[src_col]);
+  strcpy(g->message, "OK");
+  return 1;
+}
+
+/*—————————————————  Display during PLAY —————————————————*/
+static void print_card(const Card *c) {
+  if (!c || !c->face_up)
+    printf("[]");
+  else
+    printf("%c%c", RANK_CH[c->rank], SUIT_CH[c->suit]);
+}
+
+static void render(const Game *g) {
+  /* Header aligned with tab‑separated columns plus foundation column */
+  printf("C1\tC2\tC3\tC4\tC5\tC6\tC7\tF\n");
+
+  /* Determine max rows needed for tableau, but at least 4 for F1‑F4 */
+  int t_rows = 0;
+  for (int i = 0; i < 7; ++i) {
+    int h = col_height(g->columns[i]);
+    if (h > t_rows)
+      t_rows = h;
+  }
+  int rows = (t_rows < 4) ? 4 : t_rows;
+
+  for (int r = 0; r < rows; ++r) {
+    /* 7 tableau columns */
+    for (int c = 0; c < 7; ++c) {
+      Card *p = g->columns[c];
+      for (int i = 0; i < r && p; i++)
+        p = p->next; /* step r rows down */
+      if (p)
+        print_card(p);
+      else
+        printf("  ");
+      printf("\t");
+    }
+    /* foundation “column” (only first 4 rows) */
+    if (r < 4) {
+      if (g->foundations[r])
+        print_card(g->foundations[r]);
+      else
+        printf("[]");
+      printf(" F%d", r + 1);
+    }
+    printf("\n");
+  }
+
+  printf("\nLAST Command:%s\nMessage:%s\nINPUT > ", g->last_cmd, g->message);
+  fflush(stdout);
+}
+
+/*—————————————————  Command parser (both phases) —————————————————*/
+static void exec(Game *g, const char *line) {
+  strncpy(g->last_cmd, line, sizeof g->last_cmd - 1);
+  g->last_cmd[sizeof g->last_cmd - 1] = '\0';
+
+  char cmd[8];
+  if (sscanf(line, "%7s", cmd) != 1)
+    return; /* empty */
+
+  if (g->phase == STARTUP) {
+    if (!strcmp(cmd, "LD")) {
+      char fn[64] = "";
+      sscanf(line, "LD %63s", fn);
+      cmd_LD(g, fn);
+    } else if (!strcmp(cmd, "SW"))
+      cmd_SW(g);
+    else if (!strcmp(cmd, "SI")) {
+      int s = 0;
+      sscanf(line, "SI %d", &s);
+      cmd_SI(g, s);
+    } else if (!strcmp(cmd, "SR"))
+      cmd_SR(g);
+    else if (!strcmp(cmd, "SD")) {
+      char fn[64] = "";
+      sscanf(line, "SD %63s", fn);
+      cmd_SD(g, fn);
+    } else if (!strcmp(cmd, "P"))
+      cmd_P(g);
+    else if (!strcmp(cmd, "QQ"))
+      exit(EXIT_SUCCESS);
+    else
+      strcpy(g->message, "Error: Unknown command");
+    return;
+  }
+
+  /*———— PLAY phase ————*/
+  if (!strcmp(cmd, "Q")) {
+    g->phase = STARTUP;
+    strcpy(g->message, "OK");
+    return;
+  }
+
+  /* moves */
+  char src[32], dst[32];
+  if (sscanf(line, "%31[^-]->%31s", src, dst) == 2) {
+    /* tidy spaces */
+    for (char *p = src; *p; ++p)
+      if (isspace((unsigned char)*p))
+        *p = '\0';
+    /* classify source */
+    if (src[0] == 'F') {
+      int f = src[1] - '1';
+      int col = dst[1] - '1';
+      found_to_col(g, f, col);
+    } else if (src[0] == 'C') {
+      int sc = src[1] - '1';
+      if (strchr(src, ':')) {
+        char rch, sch;
+        sscanf(src, "C%d:%c%c", &sc, &rch, &sch);
+        int rank = rank_from_char(rch);
+        int suit = suit_from_char(sch);
+        int dc = dst[1] - '1';
+        seq_move(g, sc, rank, (Suit)suit, dc);
+      } else {
+        /* bottom card only */
+        if (dst[0] == 'F')
+          col_to_found(g, sc, dst[1] - '1');
+        else if (dst[0] == 'C') {
+          Card *p = g->columns[sc];
+          if (!p) {
+            strcpy(g->message, "Error: empty src");
+            return;
+          }
+          while (p->next)
+            p = p->next;
+          seq_move(g, sc, p->rank, p->suit, dst[1] - '1');
+        }
+      }
+    } else
+      strcpy(g->message, "Error: bad move");
+  } else
+    strcpy(g->message, "Error: bad syntax");
+}
+
+/*—————————————————  tiny regression tests  —————————————————*/
+#ifdef TEST
+static void t_load(void) {
+  Game g = {0};
+  cmd_LD(&g, "");
+  assert(col_height(g.deck) == 52);
+}
+static void t_si(void) {
+  Game g = {0};
+  cmd_LD(&g, "");
+  char first = g.deck->rank;
+  cmd_SI(&g, 26);
+  assert(g.deck->rank != first);
+}
+static void t_deal(void) {
+  Game g = {0};
+  cmd_LD(&g, "");
+  cmd_P(&g);
+  static int exp[7] = {1, 6, 7, 8, 9, 10, 11};
+  for (int i = 0; i < 7; ++i)
+    assert(col_height(g.columns[i]) == exp[i]);
+}
+int main(void) {
+  t_load();
+  t_si();
+  t_deal();
+  puts("All tests passed");
+  return 0;
+}
+#else
+int main(void) {
+  Game g = {.phase = STARTUP};
+  char buf[128];
+  puts("--- Yukon Solitaire (terminal) ---\nType QQ to quit.\n");
+  for (;;) {
+    if (g.phase == STARTUP)
+      fputs("INPUT > ", stdout);
+    if (!fgets(buf, sizeof buf, stdin))
+      break;
+    buf[strcspn(buf, "\n")] = '\0';
+    if (!*buf)
+      continue;
+    exec(&g, buf);
+    if (g.phase == PLAY)
+      render(&g);
+    else
+      printf("Message:%s\n", g.message);
+  }
+  return 0;
+}
+#endif
