@@ -1,7 +1,7 @@
 # ---- paths ----
 SRCDIR := src
 BINDIR := bin
-
+TESTSRC := $(SRCDIR)/tests.c
 CC      := gcc
 CFLAGS  := -std=c11 -Wall -Wextra -I$(SRCDIR)
 
@@ -19,7 +19,7 @@ else
 endif
 
 # ---- targets ----
-.PHONY: all tui gui clean
+.PHONY: all tui gui test clean
 all: tui gui            # builds what is possible
 
 tui: | $(BINDIR)
@@ -38,3 +38,9 @@ $(BINDIR):
 
 clean:
 	rm -rf $(BINDIR)
+
+# --- unit test ----------------------------------------------------------
+test: | $(BINDIR)
+	$(CC) $(CFLAGS) -DYUKON_ENGINE_IMPLEMENTATION $(TESTSRC) -o $(BINDIR)/tests
+	@echo "Running unit tests…"
+	@$(BINDIR)/tests && echo "✓ All tests passed"
