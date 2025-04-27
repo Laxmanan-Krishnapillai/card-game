@@ -14,7 +14,7 @@ ifeq ($(SDL_CONFIG),)
     GUI_ENABLED := 0
 else
     SDL_CFLAGS := $(shell $(SDL_CONFIG) --cflags)
-    SDL_LIBS   := $(shell $(SDL_CONFIG) --libs)
+    SDL_LIBS   = $(shell sdl2-config --libs) -lSDL2_ttf    
     GUI_ENABLED := 1
 endif
 

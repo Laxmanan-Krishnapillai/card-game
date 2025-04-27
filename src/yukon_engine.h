@@ -513,6 +513,11 @@ void engine_execute(Game *g, const char *line) {
       if (strchr(src, ':')) {
         char rch, sch;
         sscanf(src, "C%d:%c%c", &sc, &rch, &sch);
+        sc -= 1; /* convert to 0-based (C1 → 0 … C7 → 6) */
+        if (sc < 0 || sc > 6) {
+          _msg(g, "Error: bad column");
+          return;
+        }
         _seq_move(g, sc, _rank_from(rch), (Suit)_suit_from(sch), dst[1] - '1');
       } else {
         if (dst[0] == 'F')
