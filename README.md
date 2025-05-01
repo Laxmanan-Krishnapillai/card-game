@@ -43,8 +43,8 @@
 ```bash
 # clone / unpack project, then
 make             # builds tui, yukon_gui, tests
-./tui            # run text UI
-./yukon_gui      # run SDL2 GUI
+./bin/tui            # run text UI
+./bin/yukon_gui      # run SDL2 GUI
 make test        # run unit driver (exit code 0 ⇒ success)
 ```
 If you prefer manual compilation, see next section.
