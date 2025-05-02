@@ -444,8 +444,12 @@ void engine_execute(Game *g, const char *line) {
       _cmd_LD(g, fn);
       return;
     }
+    /* show‑deck command (valid only when a deck is present) */
     if (!strcmp(cmd, "SW")) {
-      _msg(g, "(ignored in engine)");
+      if (!g->deck)
+        _msg(g, "Error: No deck");
+      else
+        _msg(g, "(ignored in engine)");
       return;
     }
     if (!strcmp(cmd, "SI")) {
@@ -476,6 +480,11 @@ void engine_execute(Game *g, const char *line) {
     return;
   }
   /*— PLAY —*/
+  /* Disallow SW once dealing has begun */
+  if (!strcmp(cmd, "SW")) {
+    _msg(g, "Command not available in the PLAY phase");
+    return;
+  }
   if (!strcmp(cmd, "Q")) {
     /* free columns and foundations */
     for (int c = 0; c < 7; ++c) {

@@ -170,10 +170,11 @@ int main(int argc, char **argv) {
 
           if (!strcmp(upper, "QQ"))
             running = 0;
-          if (strcmp(upper, "SW") == 0 && g.phase == STARTUP)
-            showDeck = true;
+          if (!strcmp(upper, "SW") && g.phase == STARTUP &&
+              !strcmp(g.message, "(ignored in engine)"))
+            showDeck = true; /* deck present */
           else
-            showDeck = false;
+            showDeck = false; /* either not SW or engine rejected it */
           entry[0] = '\0';
           len = 0; /* clear the entry box */
         } else if (e.key.keysym.sym == SDLK_ESCAPE) {

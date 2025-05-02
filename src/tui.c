@@ -77,11 +77,13 @@ int main(void) {
 
     /* front‑end output logic */
     if (!strcmp(buf, "SW") && g.phase == STARTUP) {
-      show_deck(&g); /* SW prints deck */
+      if (!strcmp(g.message, "(ignored in engine)"))
+        show_deck(&g); /* deck present → show it */
+      else
+        printf("Message:%s\n", g.message); /* pass the error through */
     } else if (g.phase == PLAY) {
-      render_terminal(&g); /* full board */
+      render_terminal(&g);
     } else {
-      /* any other STARTUP‑phase command */
       printf("Message:%s\n", g.message);
     }
   }
